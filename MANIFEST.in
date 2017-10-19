@@ -1,0 +1,4 @@
+include ifordeo.py
+include ifordeovrt.py
+include config/ifordeo.ini
+include config/__init__.py
