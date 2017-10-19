@@ -9,23 +9,22 @@ if not os.path.isdir(configdir):
     os.mkdir(configdir)
 
 ini = os.path.join(configdir, 'ifordeo.ini')
-#if not os.path.isfile(ini):
-#    with open(ini, 'w') as output:
-#        output.write('[DEFAULT]\n')
-#        x = raw_input('Please input the base directory for imagery data (includes Fmask, SR, BT, NDVI, EVI subdirectories): ')
-#        for y in ['Fmask', 'SR', 'BT', 'NDVI', 'EVI']:
-#            output.write('%sdir = %s\n'%(y.lowercase(),os.path.join(x,y)))
-#        y = raw_input('Please input the data ingest directory (will use %s if not set): '%os.path.join(x,'ingest'))
-#        if len(y) == 0 or not os.path.isdir(y):
-#            y = os.path.join(x, 'ingest')
-#        output.write('ingestdir = %s\n'%y)
-#        y = raw_input('Please input the post-processing tar.gz archive directory: ')
-#        output.write('archdir = %s\n'%y)
-#        y = raw_input('Please input the log directory: ')
-#        output.write('logdir = %s\n'%y)
-#        y = raw_input('Please input the location of Landsat WRS polygon geodatabase (must end in .gdb): ')
-#        output.write('WRS1 = %s\n'%os.path.join(y,'Ireland_WRS1_Landsat_1_3_ITM'))
-#        output.write('WRS2 = %s\n'%os.path.join(y,'Ireland_WRS2_Landsat_4_8_ITM'))
+if not os.path.isfile(ini):
+    with open(ini, 'w') as output:
+        output.write('[DEFAULT]\n')
+        output.write('errorlogfile = ifordeo_errors.log\n')
+        x = input('Please input the base directory for output data: ')
+        output.write('baseoutputdir = %s\n'%(x))
+        y = input('Please input the IForDEO data catalog directory (not the same as the IEO\n. If not set, will use %s): '%os.path.join(x,'Catalog'))
+        if len(y) == 0 or not os.path.isdir(y):
+            y = os.path.join(x, 'Catalog')
+        output.write('catdir = %s\n'%y)
+        y = input('Please input the location of the forestry raster mask file (optional, but highly recommended): ')
+        output.write('forestrymaskfile = %s\n'%y)
+        output.write('[vector]\n')
+        y = input('Please input the location of a shapefile for all of Ireland (optional): ')
+        output.write('irelandshp = %s\n'%y)
+        
     
 setup(
     # Application name:

@@ -21,3 +21,9 @@ You will also need the Irish Earth Observation (IEO) module (https://github.com/
 This should set up imageprocess. Once successfully set up, install IForDEO via:
 
 > python setup.py --install
+
+During setup, you will need to input the following information:
+1. Required: the base directory for IForDEO output data.
+2. Optional: the IForDEO catalog data directory. By default, this will be in the automatically created in the base IForDEO directory, but you have the option of creating it wherever you so choose. It is not the same as the IEO catalog directory, which is also used by this module.
+3. Optional, but highly recommended. The location of the raster forestry parcel mask file, where 1 =  forest parcel, 0 = not. Using this will greatly speed up processing, but it is not necessary for the model to run.
+4. Optional, but actually unneeded for most uses. The location of a shapefile of all of Ireland. This is only needed if you want to generate your own tile grid for Ireland. Since a tile grid is included, the code will run fine without the shapefile.
