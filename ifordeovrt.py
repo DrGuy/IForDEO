@@ -6,8 +6,9 @@ Created on Wed Aug  3 15:16:51 2016
 @author: gserbin.admin
 """
 
-import os, sys, glob, datetime, argparse, shutil
+import os, sys, glob, datetime, argparse, shutil, ieo
 from subprocess import Popen
+from pkg_resources import resource_filename, Requirement
 from osgeo import ogr, osr
 
 if sys.version_info[0] == 2:
@@ -15,17 +16,23 @@ if sys.version_info[0] == 2:
 else:
     import configparser
 
+# Access configuration data inside Python egg
 config = configparser.ConfigParser()
-config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
-config.read(config_path)
+config_location = resource_filename(Requirement.parse('ifordeo'), 'config/ifordeo.ini')
+#config_file = 'ifordeo.ini'
+#config_location = resource_stream(__name__, config_file)
+#config_path = os.path.join(os.path.join(__name__, 'config'), 'ifordeo.ini')
+#config_location = resource_stream(config_path)
+#config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
+config.read(config_location)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-o', '--overwrite', action = "store_true", help = 'Overwrite existing files.')
-parser.add_argument('-r', '--rootdir', type = str, default = config['DEFAULT']['baseoutputdir'], help = 'Base directory for DT4 classification files.')
+parser.add_argument('-r', '--rootdir', type = str, default = config['DEFAULT']['baseoutputdir'], help = 'Base directory for IForDEO classification files.')
 parser.add_argument('--minforesttograss', type = int, default = 3000, help = 'Minimum value for forest to grass cutoff.')
 parser.add_argument('--maxforesttograss', type = int, default = 4000, help = 'Maximum value for forest to grass cutoff.')
 parser.add_argument('--increment', type = int, default = 250, help = 'Increment value for forest to grass cutoff.')
-parser.add_argument('--dt4a', type = bool, default = True, help = 'Use neew DT4a data files.')
+parser.add_argument('--dt4a', type = bool, default = True, help = 'Use new DT4a data files.')
 parser.add_argument('-l', '--listonly', action = "store_true", help = 'Rewrite catalog lists, but not VRTs.')
 parser.add_argument('-u', '--update', action = "store_true", help = 'Update VRTs and lists for new scenes.')
 parser.add_argument('-f', '--fix', action = "store_true", help = 'Fix shapefiles only.')
@@ -114,7 +121,7 @@ def writetoshp(catshp, *args, **kwargs):
     datetuple = kwargs.get('datetuple', None)
     fix = kwargs.get('fix', False)
     
-    src_ds = driver.Open(config['vector']['landsatshp'], 0)
+    src_ds = driver.Open(ieo.landsatshp, 0)
     inlayer = src_ds.GetLayer()
     
     if not fix:

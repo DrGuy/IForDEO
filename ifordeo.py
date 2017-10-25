@@ -1,10 +1,15 @@
 #/usr/bin/python
+# the Irish Forest Disturbance from Earth Observation (IForDEO) Module
+# By Guy Serbin, Environment, Soils, and Land Use Dept., CELUP, Teagasc, Johnstown Castle, Co. Wexford Y35 TC97, Ireland
+# Email: Guy <dot> Serbin <at> teagasc <dot> ie
+# This model was developed for the CForRep project
 
-import os, sys, glob, shutil, argparse, datetime, numexpr #, gc
+import os, sys, glob, shutil, argparse, datetime, numexpr, ieo
+from ieo import ENVIfile
+from pkg_resources import resource_filename, Requirement
 from osgeo import gdal, ogr, osr
 import numpy as np
 
-# the Irish Forest Disturbance from Earth Observation (IForDEO) Module
 
 if sys.version_info[0] == 2:
     import ConfigParser as configparser
@@ -12,19 +17,30 @@ else:
     import configparser
 
 # bundled configuration and data
-config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
-tileshppath = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'), 'IRL_tiles_30.shp')
+# config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
+# tileshppath = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'), 'IRL_tiles_30.shp')
+# 
+# config = configparser.ConfigParser()
+# 
+# if os.path.isfile(config_path):
+#     print('Successfully located: {}'.format(config_path))
+# else:
+#     print('Failed to find: {}'.format(config_path))
+# config.read(config_path)
 
+# Access configuration data inside Python egg
 config = configparser.ConfigParser()
-
-if os.path.isfile(config_path):
-    print('Successfully located: {}'.format(config_path))
-else:
-    print('Failed to find: {}'.format(config_path))
-config.read(config_path)
+config_location = resource_filename(Requirement.parse('ifordeo'), 'config/ifordeo.ini')
+#config_file = 'ifordeo.ini'
+#config_location = resource_stream(__name__, config_file)
+#config_path = os.path.join(os.path.join(__name__, 'config'), 'ifordeo.ini')
+#config_location = resource_stream(config_path)
+#config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
+config.read(config_location)
+tileshppath = resource_filename(Requirement.parse('ifordeo'), 'data/IRL_tiles_30.shp')
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--ieo', type = str, help = 'ieo module directory')
+#parser.add_argument('-i', '--ieo', type = str, default = None, help = 'Alternate ieo module directory')
 parser.add_argument('-c', '--calcdt4', action = "store_true", help = 'Calculate DT4 scenes.')
 parser.add_argument('-o', '--overwrite', action = "store_true", help = 'Overwrite existing files.')
 parser.add_argument('-s', '--shp', type = str, default = tileshppath, help = 'National tile grid shapefile.')
@@ -40,30 +56,30 @@ parser.add_argument('--endday', type = int, default = 283, help = 'Day of year f
 parser.add_argument('--minpixels', type = int, default = 1000, help = 'Minimum number of clear land pixels in a Landsat scene required for DT4 or DT4a classification.')
 margs = parser.parse_args()
 
-try:
-    import ieo
-    from ieo import ENVIfile
-except:
-    # ieolocation = config['DEFAULT']['ieolocation']
-    if os.path.exists(config['DEFAULT']['ieolocation']):
-        sys.path.append(config['DEFAULT']['ieolocation'])
-        import ieo
-        from ieo import ENVIfile
-    else:
-        if margs.ieo:
-            dirname = margs.ieo
-        else:
-            dirname = input('Please input path to ieo module: ')
-        if os.path.isdir(dirname):
-            sys.path.append(dirname)
-            import ieo
-            from ieo import ENVIfile
-        else:
-            print('ERROR: ieo module not located, exiting.')
-            quit()
+#try:
+#    import ieo
+#    from ieo import ENVIfile
+#except:
+#    # ieolocation = config['DEFAULT']['ieolocation']
+#    if os.path.exists(config['DEFAULT']['ieolocation']):
+#        sys.path.append(config['DEFAULT']['ieolocation'])
+#        import ieo
+#        from ieo import ENVIfile
+#    else:
+#        if margs.ieo:
+#            dirname = margs.ieo
+#        else:
+#            dirname = input('Please input path to ieo module: ')
+#        if os.path.isdir(dirname):
+#            sys.path.append(dirname)
+#            import ieo
+#            from ieo import ENVIfile
+#        else:
+#            print('ERROR: ieo module not located, exiting.')
+#            quit()
         
     
-errorfile = os.path.join(os.path.dirname(sys.argv[0]), config['DEFAULT']['errorlogfile'])
+errorfile = os.path.join(ieo.logdir, config['DEFAULT']['errorlogfile'])
 
 def logerror(f, message):
     if not os.path.exists(errorfile):
@@ -88,7 +104,6 @@ prj.SetProjection("EPSG:2157")
 
 # Directory and file paths
 
-sceneshpfilepath = config['vector']['landsatshp']
 
 
 # Shamelessly copied from http://pydoc.net/Python/spectral/0.17/spectral.io.envi/
@@ -600,7 +615,7 @@ def makeproclist(tilegeom, foresttograss, usecatfile, *args, **kwargs):
     else:
         dirname = kwargs.get('dirname', os.path.join(config['DEFAULT']['baseoutputdir'], 'DT4a'))
     
-    sceneshp = kwargs.get('sceneshp', sceneshpfilepath)
+    sceneshp = kwargs.get('sceneshp', ieo.landsatshp)
     
     driver = ogr.GetDriverByName("ESRI Shapefile")
     if usecatfile:
@@ -1597,7 +1612,7 @@ def proctile(tile, foresttograss, *args, **kwargs):
     yearlychangeonly = kwargs.get('yearlychangeonly', False)
     yearlychange = kwargs.get('yearlychange', True)
     usecatfile = kwargs.get('usecatfile', True)
-    badlistfile = kwargs.get('badlist', os.path.join(ieo.srdir.replace('SR', 'Catalog'), 'badlist.txt'))
+    badlistfile = kwargs.get('badlist', os.path.join(ieo.catdir, 'badlist.txt'))
     prob = True
     fc = True
     yc = True
@@ -1748,7 +1763,7 @@ def batchdt4(*args, **kwargs):
     minpixels = kwargs.get('minpixels', margs.minpixels)
     increment = kwargs.get('increment',  margs.increment)
     overwrite = kwargs.get('overwrite', margs.overwrite)
-    listfile = kwargs.get('listfile', os.path.join(config['DEFAULT']['espaproclistdir'], 'LEDAPS_list_{}.txt'.format(datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))))
+    listfile = kwargs.get('listfile', os.path.join(os.path.join(ieo.catdir, 'LEDAPS_processing_lists'), 'LEDAPS_list_{}.txt'.format(datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))))
     dt4a  = kwargs.get('dt4a', True)
     
     if dt4a:
