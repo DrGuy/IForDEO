@@ -4,6 +4,9 @@
 # Email: Guy <dot> Serbin <at> teagasc <dot> ie
 # This model was developed for the CForRep project
 
+# 8 February 2018: Added DT4b function to better calculate continuum removal features between green-NIR and NIR-SWIR2 + code updates
+# 8 February 2018: Updated help info in input parser
+
 import os, sys, glob, shutil, argparse, datetime, numexpr, ieo
 from ieo import ENVIfile
 from pkg_resources import resource_filename, Requirement
@@ -37,15 +40,18 @@ config_location = resource_filename(Requirement.parse('ifordeo'), 'config/iforde
 #config_location = resource_stream(config_path)
 #config_path = os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config'), 'ifordeo.ini')
 config.read(config_location)
-tileshppath = resource_filename(Requirement.parse('ifordeo'), 'data/IRL_tiles_30.shp')
+tileshppath = ieo.NTS # resource_filename(Requirement.parse('ifordeo'), 'data/IRL_tiles_30.shp')
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(description = 'Irish Forestry Disturbance from Earth Observation (IForDEO) module.', epilog = 'Setting both --dt4a and --dt4b to false will utilise the old DT4 function and will generate many more files.')
 #parser.add_argument('-i', '--ieo', type = str, default = None, help = 'Alternate ieo module directory')
 parser.add_argument('-c', '--calcdt4', action = "store_true", help = 'Calculate DT4 scenes.')
+parser.add_argument('-a', '--dt4a', default = False, help = 'Use DT4a algorithm (default = False). Setting this to "True" will override --dt4b to "False".')
+parser.add_argument('-b', '--dt4b', default = True, help = 'Use DT4b algorithm (default = True).')
 parser.add_argument('-o', '--overwrite', action = "store_true", help = 'Overwrite existing files.')
 parser.add_argument('-s', '--shp', type = str, default = tileshppath, help = 'National tile grid shapefile.')
 parser.add_argument('-f', '--forestrymaskfile', type = str, default = config['DEFAULT']['forestrymaskfile'], help = 'National forestry mask file.')
 parser.add_argument('--usemaskfile', type = bool, default = True, help = 'Use a national forestry mask file (default = True).')
+parser.add_argument('--usecatfile', type = bool, default = True, help = 'Use local VRT catalog file for creating yearly classifications (default = True).')
 parser.add_argument('--minforesttograss', type = int, default = 3000, help = 'Minimum scaled reflectance value for cutoff between forest and non-forest vegetation.')
 parser.add_argument('--maxforesttograss', type = int, default = 4000, help = 'Maximum scaled reflectance value for cutoff between forest and non-forest vegetation.')
 parser.add_argument('--increment', type = int, default = 250, help = 'Increment for scaled reflectance value for cutoff between forest and non-forest vegetation.')
@@ -53,8 +59,9 @@ parser.add_argument('--startyear', type = int, default = 1984, help = 'Year for 
 parser.add_argument('--endyear', type = int, default = datetime.datetime.now().year, help = 'Year for which to end the analysis.')
 parser.add_argument('--startday', type = int, default = 82, help = 'Day of year for which to start the analysis.')
 parser.add_argument('--endday', type = int, default = 283, help = 'Day of year for which to end the analysis.')
-parser.add_argument('--minpixels', type = int, default = 1000, help = 'Minimum number of clear land pixels in a Landsat scene required for DT4 or DT4a classification.')
+parser.add_argument('--minpixels', type = int, default = 1000, help = 'Minimum number of clear land pixels in a Landsat scene required for DT4, DT4a, or DT4b classification.')
 margs = parser.parse_args()
+
 
 #try:
 #    import ieo
@@ -198,6 +205,26 @@ def getheaderdict(*args, **kwargs):
             [0,     200,    0],
             [0,     215,    150]]
         headerdict['defaultbasefilename'] = '{}_DT4aclass.dat'.format(SceneID)
+
+    elif rastertype == 'DT4b':
+        headerdict['description'] = 'Decision tree classification for {}, foresttograss = {} - {}'.format(SceneID, minforesttograss, maxforesttograss)
+        headerdict['band names'] = ['DT4b']
+        headerdict['classes'] = 12
+        headerdict['class names'] = ['Unclassified', 'Water', 'Urban', 'Bog', 'Bare Soil', 'Heath', 'Grassland/ cropland', 'Young forest', 'Mature forest', 'Possible forest or green heath', 'Forest/ grass/ crop', 'Forest/ green heath/ grass/ crop']
+        headerdict['class lookup'] = [
+            [0,     0,      0],   
+            [0,     0,      255],   
+            [200,   200,    200],   
+            [255,   127,    80],   
+            [160,   82,     45],   
+            [218,   112,    214],   
+            [0,     255,    0],   
+            [165,   214,    0],   
+            [0,     139,    0],   
+            [0,     170,    100],
+            [0,     200,    0],
+            [0,     215,    150]]
+        headerdict['defaultbasefilename'] = '{}_DT4bclass.dat'.format(SceneID)    
     
     elif rastertype == 'YearlyDT4':
         headerdict['classes'] = 17
@@ -549,6 +576,65 @@ def cleansignal(signal): # This assigns either a forestry/not forestry value to 
     locs = None
     return signal
 
+def lcchange(signal, years, endyear):
+    # This function takes a signal containing no data/ not forest/ possible forest/ forest values and determines afforestation, reforestation, and clearcut years. It takes code that was originally in the calcyearlychange() function, and was created so that yearly time-series data from CSVs could also be analysed.
+    startclassval = 0
+    endclassval = 0
+    afforestedval = 0
+    clearcutval = 0
+    reforestedval = 0
+    status = 0
+    statusyear = 0
+    
+    if (1 in signal or 3 in signal) and (0 in signal or 2 in signal):
+                # print(signal)
+        signal = cleansignal(np.array(signal)).tolist()
+    startclassval = signal[0]  
+    endclassval = signal[-1]
+    if 3 in signal and 1 in signal:
+        cut = False
+        refor = False
+        if signal[0] == 1:
+            afforestedval = years[signal.index(next(i for i in signal[1:] if i == 3))]
+        for i in range(len(years) - 1, 0,-1):
+            print(i)
+            if signal[i] == 3 and signal[i - 1] == 1:
+                year = years[i]
+                if year > afforestedval and (afforestedval > 0 or signal[0] == 3) and not refor:
+                    reforestedval = year
+                    refor = True 
+            elif signal[i] == 1 and signal[i - 1] == 3:
+                year = years[i]
+                clearcutval = year
+                cut = True
+            if refor and cut:
+                break
+        diffyear=0
+        if reforestedval > afforestedval:
+            lastforest = reforestedval
+        else:
+            lastforest = afforestedval
+        if clearcutval > lastforest: #reforested[y, x] and clearcut[y, x] > afforested[y, x]:
+            diffyear = endyear - clearcutval # replace year
+            if diffyear < 5:
+                status = 5 # recent clearcut
+            elif diffyear < 10:
+                status = 4 # possible deforestation
+            elif diffyear >= 10:
+                status = 3 # deforested
+            statusyear = clearcutval
+        elif reforestedval > afforestedval:
+            status = 6 # reforested
+            statusyear = reforestedval
+        elif afforestedval > 0:
+            status = 7 # afforested
+            statusyear = afforestedval
+    elif 3 in signal and 0 not in signal:
+        status = 2
+    elif 1 in signal and 0 not in signal:
+        status = 1
+    return startclassval, endclassval, afforestedval, clearcutval, reforestedval, status, statusyear
+
 def drawProgressBar(percent, pixnum,numpixels, barLen = 40):
     sys.stdout.write("\r")
     progress = ""
@@ -561,7 +647,7 @@ def drawProgressBar(percent, pixnum,numpixels, barLen = 40):
     sys.stdout.flush()
 
 def getbadlist(*args, **kwargs):
-    badlistfile = kwargs.get('badlist', os.path.join(ieo.srdir.replace('SR', 'Catalog'), 'badlist.txt'))
+    badlistfile = kwargs.get('badlist', ieo.badlandsat)
     badlist = []
     if os.path.isfile(badlistfile):
         with open(badlistfile, 'r') as lines:
@@ -574,10 +660,16 @@ def getbadlist(*args, **kwargs):
     return badlist
 
 def makereproctiledict(*args, **kwargs):
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
+    else:
+        outsubdir = None
     startyear = kwargs.get('startyear', margs.startyear)
     endyear = kwargs.get('endyear', margs.endyear)
-    badlistfile = kwargs.get('badlist', os.path.join(ieo.srdir.replace('SR', 'Catalog'), 'badlist.txt'))
-    foresttograss = kwargs.get('foresttograss', 'dt4a')
+    badlistfile = kwargs.get('badlist', ieo.badlandsat)
+    foresttograss = kwargs.get('foresttograss', outsubdir)
     if isinstance(foresttograss, int):
         foresttograss = int(foresttograss)
     probdir = os.path.join(os.path.join(config['DEFAULT']['baseoutputdir'], foresttograss), 'Probability')
@@ -607,47 +699,62 @@ def makereproctiledict(*args, **kwargs):
 ## Vector routines
 
 def makeproclist(tilegeom, foresttograss, usecatfile, *args, **kwargs):
+    # this function determines which processed DT4/a/b VRT files or scenes get used in calcprobabilityraster()
     year = kwargs.get('year', None) # limit to a specific year
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
+    else:
+        outsubdir = str(foresttograss)
     badlist = getbadlist()
     proclist = []
-    if foresttograss:
-        dirname = kwargs.get('dirname', os.path.join(config['DEFAULT']['baseoutputdir'], '{}'.format(foresttograss)))
-    else:
-        dirname = kwargs.get('dirname', os.path.join(config['DEFAULT']['baseoutputdir'], 'DT4a'))
+#    if foresttograss:
+    dirname = kwargs.get('dirname', os.path.join(config['DEFAULT']['baseoutputdir'], '{}'.format(outsubdir)))
+#    else:
+#        dirname = kwargs.get('dirname', os.path.join(config['DEFAULT']['baseoutputdir'], outsubdir))
     
-    sceneshp = kwargs.get('sceneshp', ieo.landsatshp)
+    if not margs.usecatfile:
+        sceneshp = kwargs.get('sceneshp', ieo.landsatshp)
+    else:
+        catshpdir = os.path.join(config['DEFAULT']['catdir'], 'shp')
+#        if foresttograss:
+#            sceneshp = os.path.join(catshpdir, '{}_proc.shp'.format(foresttograss))
+#        else:
+        sceneshp = os.path.join(catshpdir, '{}_proc.shp'.format(outsubdir))
     
     driver = ogr.GetDriverByName("ESRI Shapefile")
-    if usecatfile:
-        catshpdir = os.path.join(config['DEFAULT']['catdir'], 'shp')
-        if foresttograss:
-            sceneshp = os.path.join(catshpdir, '{}_proc.shp'.format(foresttograss))
-        else:
-            sceneshp = os.path.join(catshpdir, 'DT4a_proc.shp')
+    
         
     ds = driver.Open(sceneshp, 0)
     layer = ds.GetLayer()
     for feature in layer:
-        if usecatfile:
-            f = feature.GetField('VRT')
-            fyear = feature.GetField('Year')
-        else:
-            sceneid = feature.GetField('sceneID')
-            if foresttograss: 
-                f = os.path.join(dirname, '{}_DT4class.dat'.format(sceneid))
+        try:
+            if usecatfile:
+                f = feature.GetField('VRT')
+                fyear = feature.GetField('Year')
             else:
-                f = os.path.join(dirname, '{}_DT4aclass.dat'.format(sceneid))
-            fyear = int(feature.GetField('acqDate')[:4])
-        
-        datestr = os.path.basename(f)[9:16]
-        if (year == fyear or not year) and os.path.isfile(f):
-            geom = feature.GetGeometryRef()
-            if tilegeom.Intersect(geom) and not datestr in badlist:
-                proclist.append(f)
+                sceneid = feature.GetField('sceneID')
+                if foresttograss: 
+                    f = os.path.join(dirname, '{}_DT4class.dat'.format(sceneid))
+                else:
+                    f = os.path.join(dirname, '{}_{}class.dat'.format(sceneid, outsubdir))
+                fyear = int(feature.GetField('acqDate')[:4])
+            
+            datestr = os.path.basename(f)[9:16]
+            if (year == fyear or not year) and os.path.isfile(f):
+                geom = feature.GetGeometryRef()
+                if tilegeom.Intersect(geom) and not datestr in badlist:
+                    proclist.append(f)
+        except Exception as e:
+            print('ERROR: {}: {}'.format(os.path.basename(sceneshp), e))
+            logerror(sceneshp, e)
     layer = None
     return proclist
 
-def makegrid(*args, **kwargs):
+def makegrid(*args, **kwargs): # function deprecated: Further development will now occur as part of IEO 1.1.0 and higher
     import string
     minX = kwargs.get('minX', 418500.0)
     minY = kwargs.get('minY', 519000.0)
@@ -1042,13 +1149,169 @@ def DT4a(infile, outdir, minpixels, *args, **kwargs):
     return True, 'Success'
 
 
+def DT4b(infile, outdir, minpixels, *args, **kwargs):
+    
+    # By Guy Serbin, Spatial Analysis Unit, REDP, Teagasc National Food Research Centre, Ashtown, Dublin 15, Ireland.
+    # This funtion is modified from DT4a with corrections for estimated continuum removal values. It will process a LEDAPS-processed Landsat 4 TM - 8 OLI file and perform a decision tree classification on it.
+    # 
+    # Variables:
+    # infile - full path and filename of input reflectance file.
+    # maskdir - directory containing fmask files
+    # outdir - directory to output classifications
+    # minpixels - minimum number of cloud-free land pizels needed for the analysis
+    # overwrite - if set, overwrite any existing files, otherwise skip.
+    
+    cfmaskfile = kwargs.get('fmask', None)
+    fmaskdir = kwargs.get('fmaskdir', ieo.fmaskdir)
+    overwrite = kwargs.get('overwrite', margs.overwrite)
+    listfile = kwargs.get('listfile', None)
+    minforesttograss = kwargs.get('minforesttograss', margs.minforesttograss)
+    maxforesttograss = kwargs.get('maxforesttograss', margs.maxforesttograss)
+    
+    basename = os.path.basename(infile)
+    SceneID = basename[:21]
+    NIRSWIR12 = coeffdict[basename[:3]]['NIRSWIR12']
+    GRNIR = coeffdict[basename[:3]]['GRNIR']
+    landsat = basename[2:3]
+    if not cfmaskfile:
+        cfmaskfile = os.path.join(fmaskdir, basename.replace('_ref_ITM', '_cfmask'))
+        if not os.access(cfmaskfile, os.F_OK):
+            cfmaskfile = cfmaskfile.replace('_cfmask', '_fmask')
+            if not os.access(cfmaskfile, os.F_OK):
+                print("There is no Fmask file for this scene, returning.")
+                logerror(cfmaskfile, 'File missing.')
+                if listfile:
+                    ESPAreprocess(SceneID, listfile)
+                return False, 'No Fmask'
+    elif not fmaskdir and not cfmaskfile:
+        print("Neither 'fmask' nor 'fmaskdir' have been defined for this scene, returning.")
+        logerror(cfmaskfile, 'fmask or cfmask not defined.')
+        return False, 'No Fmask'
+    URI = os.path.join(outdir, basename.replace('_ref_ITM', '_DT4class'))
+    if URI.endswith('.vrt'):
+        URI = URI.replace('.vrt', '.dat')
+    if os.access(URI, os.F_OK):
+        if overwrite:
+            print('Found existing output file, deleting associated files and overwriting.')
+            files = glob.glob(URI.replace('.dat', '.*'))
+            for f in files:
+                os.remove(f)
+        else:
+            print('Found existing output file, skipping.')
+            return False, 'Output exists'
+  
+    # Open Fmask file and use data to determine if scene is worth executing decision tree
+    print("Found Fmask file {}, determining if scene is to be processed.".format(os.path.basename(cfmaskfile)))
+    try: # Master Yoda: No. Try not. Do... or do not. There is no try.
+        cfmask = gdal.Open(cfmaskfile)
+        cfgt = cfmask.GetGeoTransform()
+        cfmaskdata = cfmask.GetRasterBand(1).ReadAsArray()
+        gooddata = np.sum(numexpr.evaluate("(cfmaskdata == 0)"))
+        if gooddata < minpixels:
+            print('There are an insufficient number of clear land pixels in this scene, returning.')
+            cfmask = None
+            gooddata = None
+            return False, 'Insufficient pixels'
+        else:
+            print('A sufficient number of clear land pixels have been found in the scene, processing.')
+            gooddata = None
+    except Exception as e:
+        print('There was an error in the Fmask file, logging and skipping scene: {}'.format(e))
+        logerror(cfmaskfile, e) 
+        if listfile:
+            ESPAreprocess(SceneID, listfile)
+        return False, 'Fmask error'
+    try:
+        acqtime = ''
+        # Open main data set
+        raster = gdal.Open(infile)
+        
+        # Get data acquisition time 
+        if infile.endswith('.dat'):
+            hdr = infile.replace('.dat', '.hdr')
+        else:
+            flist = glob.glob(os.path.join(ieo.srdir, 'L*{}.dat'.format(basename[9:21])))
+            if len(flist) > 0:
+                hdr = flist[0].replace('.dat', '.hdr')
+            acqtime = '' # Attempt to extract acquisition time data from ENVI header of input file
+        
+            with open(hdr, 'r') as lines:
+                for line in lines:
+                    if 'acquisition time' in line:
+                        acqtime = line
+        if acqtime == '':
+            datetuple = datetime.datetime.strptime(basename[9:16], '%Y%j')
+            acqtime =  'acquisition time = {}T11:30:00Z\n'.format(datetuple.strftime('%Y-%m-%d'))
+        
+        # Get file geometry
+        geoTrans = raster.GetGeoTransform()
+        ns = cfmask.RasterXSize
+        nl = cfmask.RasterYSize
+        
+        if landsat == '8': # bands += 1
+            blue = raster.GetRasterBand(2).ReadAsArray()
+            green  =raster.GetRasterBand(3).ReadAsArray()
+            red = raster.GetRasterBand(4).ReadAsArray()
+            NIR = raster.GetRasterBand(5).ReadAsArray()
+            SWIR1 = raster.GetRasterBand(6).ReadAsArray()
+            SWIR2 = raster.GetRasterBand(7).ReadAsArray()
+        else:
+            blue = raster.GetRasterBand(1).ReadAsArray()
+            green = raster.GetRasterBand(2).ReadAsArray()
+            red = raster.GetRasterBand(3).ReadAsArray()
+            NIR = raster.GetRasterBand(4).ReadAsArray()
+            SWIR1 = raster.GetRasterBand(5).ReadAsArray()
+            SWIR2 = raster.GetRasterBand(6).ReadAsArray()
+    
+        # Execute decision tree
+        data = np.zeros((nl, ns), dtype = np.uint8)
+        goodpixels = np.zeros((nl, ns), dtype = np.uint8) 
+        cfmaskdata[numexpr.evaluate("(cfmaskdata == 0) & ((blue <= 0) | (blue >= 10000) | (green <= 0) | (green >= 10000) | (red <= 0) | (red >= 10000) | (NIR <= 0) | (NIR >= 10000) | (SWIR1 <= 0) | (SWIR1 >= 10000) | (SWIR2 <= 0) | (SWIR2 >= 10000))")] = 5 # Mask to eliminate bad pixels not caught by Fmask
+        
+        data[numexpr.evaluate("((green > NIR) | (red > NIR)) & (cfmaskdata == 0)")] = 1 # Water
+        data[numexpr.evaluate("(blue < 1000) & (green < 1000) & (red < 1000) & (NIR < 1000) & (SWIR1 < 1000) & (SWIR2 < 1000) & (cfmaskdata == 0) & (data == 0)")] = 2 # Urban
+        data[numexpr.evaluate("((green > blue) & (green > red) & (green*4 < NIR) & (NIR > SWIR1) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) > 0) & (NIR < minforesttograss) & (cfmaskdata == 0)) & (data == 0)")] = 8 # Mature forest
+        data[numexpr.evaluate("((green > blue) & (green > red) & (green*4 < NIR) & (NIR > SWIR1) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) <= 0) & (NIR < minforesttograss) & (cfmaskdata == 0)) & (data == 0)")] = 9 # Possible forest or green heath
+        data[numexpr.evaluate("((green > blue) & (green > red) & (green*4 < NIR) & (NIR > SWIR1) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) > 0) & (NIR < maxforesttograss) & (cfmaskdata == 0)) & (data == 0)")] = 10 # Mature forest or crop confusion
+        data[numexpr.evaluate("((green > blue) & (green > red) & (green*4 < NIR) & (NIR > SWIR1) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) <= 0) & (NIR < maxforesttograss) & (cfmaskdata == 0)) & (data == 0)")] = 11 # Possible forest or green heath or crop confusion
+        data[numexpr.evaluate("((green > blue) & (green > red) & (green*4 < NIR) & (NIR >= maxforesttograss) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) > 0) & (cfmaskdata == 0)) & (data == 0)")] = 6 # Grassland or cropland
+        data[numexpr.evaluate("(((((NIR - green) * GRNIR + green -  red) > 0)) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) > 0) & (cfmaskdata == 0)) & (data == 0)")] = 7 # Young forest
+        data[numexpr.evaluate("(((((NIR - green) * GRNIR + green -  red) > 0)) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) <= 0) & (NIR > SWIR1) & (cfmaskdata == 0)) & (data == 0)")] = 5 # Heath
+        data[numexpr.evaluate("(((((NIR - green) * GRNIR + green -  red) <= 0)) & (red < 1000) & (cfmaskdata == 0)) & (data == 0)")] = 3 # Bog
+        data[numexpr.evaluate("(((((((NIR - green) * GRNIR + green -  red) <= 0)) & (red >= 1000)) | (((((NIR - green) * GRNIR + green -  red) > 0)) & ((SWIR2 - (SWIR2 - NIR) * NIRSWIR12 -  SWIR1) <= 0))) & (cfmaskdata == 0)) & (data == 0)")] = 4 # Bare soil
+    except Exception as e:
+        print('There was an error with the reflectance data file, logging and skipping scene: {}'.format(e))
+        logerror(infile, e)
+        return False, 'Processing error'
+    
+    # Write output data to disk
+    print('Writing data to disk.')
+    parentrasters = [infile, cfmaskfile]
+    writedata(data, 'DT4b', geoTrans, minforesttograss = minforesttograss, maxforesttograss = maxforesttograss, acqtime = acqtime, SceneID = SceneID, outdir = outdir, rasters = parentrasters)
+    
+    # Close open files
+    data = None
+    raster = None
+    cfmask = None
+    print("Scene has been classified.")
+    return True, 'Success'
+
+
 def calcprobabilityraster(tile, scenelist, foresttograss, year, *args, **kwargs):
     numyears = kwargs.get('numyears', 1)
     overwrite = kwargs.get('overwrite', margs.overwrite)
-    if foresttograss:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], str(foresttograss)))
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
     else:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], 'dt4a'))
+        outsubdir = str(foresttograss)
+#    if foresttograss:
+#        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], str(foresttograss)))
+#    else:
+    indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], outsubdir))
     outdir = kwargs.get('outdir', os.path.join(indir, 'Probability'))
     numyears = kwargs.get('numyears', 1)
     
@@ -1389,12 +1652,20 @@ def Yearlydt4(indir, year, tilename, foresttograss, *args, **kwargs):
 
 
 def forestryclass(tilename, foresttograss, year, *args, **kwargs):
-    if foresttograss:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability'.format(foresttograss)))
-        outdir = kwargs.get('outdir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(foresttograss)))
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
     else:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'dt4a\Probability'))
-        outdir = kwargs.get('outdir', os.path.join(config['DEFAULT']['baseoutputdir'], r'dt4a\Probability\Forestry'))
+        outsubdir = str(foresttograss)
+#    if foresttograss:
+#        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability'.format(foresttograss)))
+#        outdir = kwargs.get('outdir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(foresttograss)))
+#    else:
+    indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability'.format(outsubdir)))
+    outdir = kwargs.get('outdir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(outsubdir)))
     print('Now calculating forestry classes for tile {}.'.format(tilename))
     if not os.path.exists(outdir):
         os.mkdir(outdir)
@@ -1423,10 +1694,18 @@ def forestryclass(tilename, foresttograss, year, *args, **kwargs):
 
 
 def calcyearlychange(tilename, foresttograss, *args, **kwargs):
-    if foresttograss:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(foresttograss)))
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
     else:
-        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'dt4a\Probability\Forestry'))
+        outsubdir = str(foresttograss)
+#    if foresttograss:
+#        indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(foresttograss)))
+#    else:
+    indir = kwargs.get('indir', os.path.join(config['DEFAULT']['baseoutputdir'], r'{}\Probability\Forestry'.format(outsubdir)))
     outdir = kwargs.get('outdir', os.path.join(indir, 'Change'))
     startyear = kwargs.get('startyear', 1984)
     endyear = kwargs.get('endyear', margs.endyear)
@@ -1612,15 +1891,25 @@ def proctile(tile, foresttograss, *args, **kwargs):
     yearlychangeonly = kwargs.get('yearlychangeonly', False)
     yearlychange = kwargs.get('yearlychange', True)
     usecatfile = kwargs.get('usecatfile', True)
-    badlistfile = kwargs.get('badlist', os.path.join(ieo.catdir, 'badlist.txt'))
+    badlistfile = kwargs.get('badlist', ieo.badlandsat)
     prob = True
     fc = True
     yc = True
     yearly = True
     probdir = os.path.join(os.path.join(config['DEFAULT']['baseoutputdir'], str(foresttograss)), 'Probability')
     tilename = tile.GetField('Tile')
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
+    if margs.dt4a:
+        outsubdir = 'dt4a'
+    elif margs.dt4b:
+        outsubdir = 'dt4b'
+    else:
+        outsubdir = str(foresttograss)
     
-    if foresttograss:
+    if dt4b:
+        print('Now processing DT4b classifications for Tile {} for the years: {} - {}.'.format(tilename, startyear, endyear))
+    elif foresttograss:
         print('Now processing DT4 classifications for Tile {} for the years: {} - {}, foresttograss = {}.'.format(tilename, startyear, endyear, foresttograss))
     else:
         print('Now processing DT4a classifications for Tile {} for the years: {} - {}.'.format(tilename, startyear, endyear))
@@ -1653,8 +1942,9 @@ def proctile(tile, foresttograss, *args, **kwargs):
            
     
 def makemaps(*args, **kwargs):
-    shp = kwargs.get('shp', config['vector']['tileshp'])
-    dt4a = kwargs.get('dt4a', True)
+    shp = kwargs.get('shp', margs.shp)
+    dt4a = kwargs.get('dt4a', margs.dt4a) #
+    dt4b = kwargs.get('dt4b', margs.dt4b)
     minforesttograss = kwargs.get('minforesttograss', margs.minforesttograss)
     maxforesttograss = kwargs.get('maxforesttograss', margs.maxforesttograss)
     increment = kwargs.get('increment', margs.increment)
@@ -1669,33 +1959,42 @@ def makemaps(*args, **kwargs):
     startyear = kwargs.get('startyear', margs.startyear)
     endyear = kwargs.get('endyear', margs.endyear)
     
-    if not os.path.isfile(shp):
-        print('ERROR: Shapefile is missing: {}'.format(shp))
+    if not os.path.isfile(shp) and not os.path.dirname(shp) == ieo.gdb_path:
+        print('ERROR: AIRT is missing: {}'.format(shp))
         logerror('shp', 'Missing shapefile.')
         return
     
     if reproctiles:
         tiledict = makereproctiledict(startyear = startyear, endyear = endyear)
     
-    driver1 = ogr.GetDriverByName("ESRI Shapefile")
-    ds = driver1.Open(shp, 0)
-    tiles = ds.GetLayer()
+    if shp.endswith('shp'): # Enable use of tiles now available in IEO 1.1.0
+        driver1 = ogr.GetDriverByName("ESRI Shapefile")
+        ds = driver1.Open(shp, 0)
+        tiles = ds.GetLayer()
+    else:
+        driver1 = ogr.GetDriverByName("FileGDB")
+        gdb, lname = os.path.split(shp)
+        ds = driver1.Open(gdb, 0)
+        tiles = ds.GetLayer(lname)
     
-    if dt4a:
+    if dt4a or dt4b:
         foresttograss = None
-        print('Now processing tiles using the DT4a algorithm.')
+        if dt4b:
+            print('Now processing tiles using the DT4b algorithm.')
+        else:
+            print('Now processing tiles using the DT4a algorithm.')
         for tile in tiles:
             print('Now using tile: {}'.format(tile.GetField('Tile')))
             if usetile:
                 if tile.GetField('Tile') == usetile:
-                    proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, yearlychangeonly = yearlychangeonly) # , probabilityonly = probabilityonly, yearlyonly = yearlyonly, fconly = fconly, 
+                    proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b) # , probabilityonly = probabilityonly, yearlyonly = yearlyonly, fconly = fconly, 
             elif reproctiles:
                 years = sorted(list(tiledict.keys()))
                 for year in years:
                     if tile.GetField('Tile') in tiledict[year]:
-                        proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, startyear = year, endyear = year, yearlychangeonly = yearlychangeonly)
+                        proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, startyear = year, endyear = year, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b)
             else:
-                proctile(tile, foresttograss, overwrite = overwrite, yearlychangeonly = yearlychangeonly)
+                proctile(tile, foresttograss, overwrite = overwrite, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b)
         print('All tiles have been processed.')
         tiles.ResetReading()
     else:
@@ -1705,14 +2004,14 @@ def makemaps(*args, **kwargs):
             for tile in tiles:
                 if usetile:
                     if tile.GetField('Tile') == usetile:
-                        proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, yearlychangeonly = yearlychangeonly) # , probabilityonly = probabilityonly, yearlyonly = yearlyonly, fconly = fconly, yearlychangeonly = yearlychangeonly
+                        proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b) # , probabilityonly = probabilityonly, yearlyonly = yearlyonly, fconly = fconly, yearlychangeonly = yearlychangeonly
                 elif reproctiles:
                     years = sorted(list(tiledict.keys()))
                     for year in years:
                         if tile.GetField('Tile') in tiledict[year]:
-                            proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, startyear = year, endyear = year, yearlychangeonly = yearlychangeonly)
+                            proctile(tile, foresttograss, overwrite = overwrite, yearlychange = yearlychange, startyear = year, endyear = year, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b)
                 else:
-                    proctile(tile, foresttograss, overwrite = overwrite, yearlychangeonly = yearlychangeonly)
+                    proctile(tile, foresttograss, overwrite = overwrite, yearlychangeonly = yearlychangeonly, dt4a = dt4a, dt4b = dt4b)
             print('All tiles have been processed for foresttograss = {}.'.format(foresttograss))
             tiles.ResetReading()
             foresttograss += increment
@@ -1746,6 +2045,7 @@ def cleandir(d, *args, **kwargs):
                         os.remove(f)
 
 def batchdt4(*args, **kwargs):
+    # updated 8 February 2018 to include DT4b algorithm as new default
     indir = kwargs.get('indir', ieo.srdir)
     invrtdir = os.path.join(indir, 'vrt')
     fmaskdir = kwargs.get('fmaskdir', ieo.fmaskdir)
@@ -1764,9 +2064,10 @@ def batchdt4(*args, **kwargs):
     increment = kwargs.get('increment',  margs.increment)
     overwrite = kwargs.get('overwrite', margs.overwrite)
     listfile = kwargs.get('listfile', os.path.join(os.path.join(ieo.catdir, 'LEDAPS_processing_lists'), 'LEDAPS_list_{}.txt'.format(datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))))
-    dt4a  = kwargs.get('dt4a', True)
+    dt4a = kwargs.get('dt4a', margs.dt4a)
+    dt4b = kwargs.get('dt4b', margs.dt4b)
     
-    if dt4a:
+    if dt4a or dt4b:
         foresttograss = None
         incs = 1
     else:
@@ -1808,7 +2109,9 @@ def batchdt4(*args, **kwargs):
     filenum = 1
     print('Total files: {}'.format(numfiles))
     
-    if dt4a:
+    if dt4b:
+        outdirs = [os.path.join(outbasedir, 'dt4b')]
+    elif dt4a:
         outdirs = [os.path.join(outbasedir, 'dt4a')]
     else:
         outdirs = []
@@ -1829,7 +2132,7 @@ def batchdt4(*args, **kwargs):
     for f in filelist:
         foresttograss = minforesttograss
         for outdir in outdirs:
-            if not dt4a:
+            if not dt4a and not dt4b:
                 foresttograss = int(os.path.basename(outdir))
             breakloop = False # Breaks while loop for Fmask issues 
 #            outdir = os.path.join(outbasedir, str(foresttograss))
@@ -1840,7 +2143,9 @@ def batchdt4(*args, **kwargs):
             retry = True
             errors = 0
             while retry and errors < 5:
-                if dt4a:
+                if dt4b:
+                    success, msg = DT4b(ref, outdir, minpixels, minforesttograss = minforesttograss, maxforesttograss = maxforesttograss, fmask = fmask, overwrite = overwrite, listfile = listfile)
+                elif dt4a:
                     success, msg = DT4a(ref, outdir, minpixels, minforesttograss = minforesttograss, maxforesttograss = maxforesttograss, fmask = fmask, overwrite = overwrite, listfile = listfile)
                 else:
                     success, msg = dt4(ref, outdir, minpixels, foresttograss, fmask = fmask, overwrite = overwrite, listfile = listfile)
@@ -1881,21 +2186,21 @@ def batchmultiyeardt4(*args, **kwargs):
     yearoffset = kwargs.get('yearoffset', 5)
     
     while foresttograss <= maxforesttograss:
-        outdir=os.path.join(outbasedir,foresttograss)
+        outdir = os.path.join(outbasedir, foresttograss)
         if not os.access(outdir, os.F_OK):
             print('Creating directory: {}'.format(outdir))
             os.mkdir(outdir)
         
-        probdir=os.path.join(outdir, 'Probability')
+        probdir = os.path.join(outdir, 'Probability')
         if not os.access(probdir, os.F_OK):
             print('Creating directory: {}'.format(probdir))
             os.mkdir(probdir)
         
-        for year in range(startyear,endyear+1):
+        for year in range(startyear, endyear+1):
             print('Processing files for year {}'.format(year))
             Yearlydt4(probdir, year, fbase, foresttograss, overwrite = overwrite)
         
-        year=startyear
+        year = startyear
         while year <= endyear:
             finalyear = year + yearoffset - 1
             Yearlydt4(probdir, year, fbase, foresttograss, endyear = finalyear, overwrite = overwrite)
@@ -1907,12 +2212,15 @@ def batchmultiyeardt4(*args, **kwargs):
 ## main
 
 def main():
-    overwrite = margs.overwrite
+#    overwrite = margs.overwrite
+    if margs.dt4a:
+        margs.dt4b = False
     if margs.calcdt4:
-       batchdt4(overwrite = overwrite) 
-       import dt4vrt
-       dt4vrt.margs.overwrite = True
-       dt4vrt.batchvrts()
+        
+       batchdt4(overwrite = margs.overwrite) 
+       import ifordeovrt
+       ifordeovrt.margs.overwrite = True
+       ifordeovrt.batchvrts()
     # if computername == 'HCAX378':
     #     if margs.calcdt4:
     #         print('Calculating DT4 classifications.')
@@ -1920,7 +2228,7 @@ def main():
     #     tileshp = r'D:\Spatial Analysis Unit\Analysis\CForRep\Working\Classifications\IRL_tiles_45.shp'
     #     if not os.path.exists(tileshp):
     #         makegrid(outfile = tileshp)
-    makemaps(overwrite = overwrite, shp = margs.shp)
+    makemaps(overwrite = margs.overwrite, shp = margs.shp)
 
 if __name__ == '__main__':
     main()

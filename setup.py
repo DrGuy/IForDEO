@@ -31,7 +31,7 @@ setup(
     name='ifordeo',
 
     # Version number:
-    version='1.0.0',
+    version='1.1.0',
 
     # Application author details:
     author='Guy Serbin',
@@ -58,7 +58,7 @@ setup(
     # Moves the script to the user's bin directory so that it can be executed.
     # Usage is 'download_espa_order.py' not 'python download_espa_order.py'
     scripts = ['ifordeo.py', 'ifordeovrt.py'],
-    packages = ['.', 'config', 'data'],
+    packages = ['config', 'data'],
     package_data={'config': ['*',], 'data': ['*',]},
     # Dependent packages (distributions)
     install_requires=[

@@ -3,8 +3,10 @@
 """
 Created on Wed Aug  3 15:16:51 2016
 
-@author: gserbin.admin
+@author: Guy Serbin, Environment, Soils, and Land Use Department, Crops, Environment, and Land Use Programme, Teagasc Environmental Research Centre, Johnstown Castle, Co. Wexford, Y35 TC97, Ireland
 """
+
+# 8 February 2018: Updated to support DT4b files
 
 import os, sys, glob, datetime, argparse, shutil, ieo
 from subprocess import Popen
@@ -32,11 +34,15 @@ parser.add_argument('-r', '--rootdir', type = str, default = config['DEFAULT']['
 parser.add_argument('--minforesttograss', type = int, default = 3000, help = 'Minimum value for forest to grass cutoff.')
 parser.add_argument('--maxforesttograss', type = int, default = 4000, help = 'Maximum value for forest to grass cutoff.')
 parser.add_argument('--increment', type = int, default = 250, help = 'Increment value for forest to grass cutoff.')
-parser.add_argument('--dt4a', type = bool, default = True, help = 'Use new DT4a data files.')
+parser.add_argument('--dt4a', type = bool, default = False, help = 'Use DT4a data files (default = False, setting to True overrides --dt4b setting).')
+parser.add_argument('--dt4b', type = bool, default = True, help = 'Use DT4b data files (default = True).')
 parser.add_argument('-l', '--listonly', action = "store_true", help = 'Rewrite catalog lists, but not VRTs.')
 parser.add_argument('-u', '--update', action = "store_true", help = 'Update VRTs and lists for new scenes.')
 parser.add_argument('-f', '--fix', action = "store_true", help = 'Fix shapefiles only.')
 margs = parser.parse_args()
+
+if margs.dt4a:
+    margs.dt4b = False
 
 catdir = config['DEFAULT']['catdir'] # os.path.join(margs.rootdir,'Catalog')
 #print(catdir)
@@ -250,14 +256,16 @@ def batchnewvrts(*args, **kwargs):
     elif subdirs:        
         dirlist = []
         for subdir in subdirs:
-            dirlist.append(os.path.join(margs.rootdir,subdir))
+            dirlist.append(os.path.join(margs.rootdir, subdir))
     
     for d in dirlist:
         print('Now searching for files in: {}'.format(d))
         filedict = {}
         subdir = os.path.basename(d)
-        if subdir == 'DT4a':
+        if subdir.lower() == 'dt4a':
             filelist = glob.glob(os.path.join(d,'L*DT4aclass.dat'))
+        elif subdir.lower() == 'dt4b':
+            filelist = glob.glob(os.path.join(d,'L*DT4bclass.dat'))
         else:
             filelist = glob.glob(os.path.join(d,'L*DT4class.dat'))
         if len(filelist) > 0:
@@ -327,7 +335,10 @@ def batchvrts():
     subdirs = []
     if margs.dt4a:
         foresttograss = None
-        subdirs.append('DT4a')
+        subdirs.append('dt4a')
+    elif margs.dt4b:
+        foresttograss = None
+        subdirs.append('dt4b')
     else:
         foresttograss = margs.minforesttograss
         while foresttograss <= margs.maxforesttograss:
