@@ -26,4 +26,4 @@ Please see the file called LICENSE.
 Contacts
 --------
 
-This software is being maintained by Dr. Guy Serbin of Teagasc.  If you wish to contact the maintainer, please do so by emailing: "guy <dot> serbin <at> teagasc <dot> ie"
+This software is being maintained by Dr. Guy Serbin of EOanalytics Ltd.  If you wish to contact the maintainer, please do so by emailing: "guy <at> eoanalytics <dot> ie"
